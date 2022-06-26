@@ -163,19 +163,20 @@ module PHP
 		classmap ||= {}
 
 		ret = nil
-		string = StringIOReader.new(string)
+		original_encoding = string.encoding if string.respond_to?(:encoding)
+		string = StringIOReader.new(string.respond_to?(:force_encoding) ? string.force_encoding('BINARY') : string)
 		while string.string[string.pos, 32] =~ /^(\w+)\|/ # session_name|serialized_data
 			ret ||= {}
 			string.pos += $&.size
-			ret[$1] = PHP.do_unserialize(string, classmap, assoc)
+			ret[$1] = PHP.do_unserialize(string, classmap, assoc, original_encoding)
 		end
 
-		ret || PHP.do_unserialize(string, classmap, assoc)
+		ret || PHP.do_unserialize(string, classmap, assoc, original_encoding)
 	end
 
 	private
 
-	def PHP.do_unserialize(string, classmap, assoc)
+	def PHP.do_unserialize(string, classmap, assoc, original_encoding)
 		val = nil
 		# determine a type
 		type = string.read(2)[0,1]
@@ -184,7 +185,7 @@ module PHP
 				count = string.read_until('{').to_i
 				val = Array.new
 				count.times do |i|
-					val << [do_unserialize(string, classmap, assoc), do_unserialize(string, classmap, assoc)]
+					val << [do_unserialize(string, classmap, assoc, original_encoding), do_unserialize(string, classmap, assoc, original_encoding)]
 				end
 				string.read(1) # skip the ending }
 
@@ -201,7 +202,13 @@ module PHP
 				end
 
 				if array
-					val.map! {|_,value| value }
+					val.map! do |_,value|
+						if value.respond_to? :force_encoding
+							value.kind_of?(String) ? value.force_encoding(original_encoding) : value
+						else
+							value
+						end
+					end
 				elsif !assoc
 					val = Hash[val]
 				end
@@ -216,8 +223,8 @@ module PHP
 				len = string.read_until('{').to_i
 
 				len.times do
-					attr = (do_unserialize(string, classmap, assoc))
-					attrs << [attr.intern, (attr << '=').intern, do_unserialize(string, classmap, assoc)]
+					attr = (do_unserialize(string, classmap, assoc, original_encoding))
+					attrs << [attr.intern, (attr << '=').intern, do_unserialize(string, classmap, assoc, original_encoding)]
 				end
 				string.read(1)
 
@@ -246,6 +253,7 @@ module PHP
 			when 's' # string, s:length:"data";
 				len = string.read_until(':').to_i + 3 # quotes, separator
 				val = string.read(len)[1...-2] # read it, kill useless quotes
+				val = val.force_encoding(original_encoding) if val.respond_to?(:force_encoding)
 
 			when 'i' # integer, i:123
 				val = string.read_until(';').to_i
